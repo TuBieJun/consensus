@@ -1,0 +1,9 @@
+[package]
+name = "consensus"
+version = "0.1.0"
+authors = ["liteng <707704459@qq.com>"]
+
+[dependencies]
+rust-htslib = "0.15.0"
+clap = "2.29.0"
+
