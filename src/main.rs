@@ -12,6 +12,7 @@ use rust_htslib::prelude::*;
 use rust_htslib::bam::Read;
 use std::str;
 use rust_htslib::bam::Record;
+use rust_htslib::bam::record::{Cigar, CigarStringView};
 use std::io;
 use std::io::prelude::*;
 use std::io::Write;
@@ -91,7 +92,45 @@ fn bamLineParse(record:&Record) -> (String, String, String, i32, i32){
     (index, pair.to_string(), strand.to_string(), insert_size.abs(), aln_pos)
 }
 
-fn dup2consensus_work(group_k:&str, pair_dup:& Vec<(Vec<u8>, Vec<u8>, Vec<u8>)>, pair_flag: &str, o_buff: & mut File, min_t_s: &u32, min_t_p: &f32)  {
+fn trim_softclip(seq_raw:&Vec<u8>, qual_raw:&Vec<u8>, top_cigar:&CigarStringView, is_reverse:bool) -> (Vec<u8>, Vec<u8>) {
+    let mut s:u32 = 0;
+    let mut e:u32 = 0;
+    let len_cigar = top_cigar.len();
+    let head_cigar_l = top_cigar[0].len();
+    let tail_cigar_l = top_cigar[len_cigar-1].len();
+    let mut trim_seq:Vec<u8> = Vec::new();
+    let mut trim_qual:Vec<u8> = Vec::new();
+    if top_cigar[0] == Cigar::SoftClip(head_cigar_l) {
+        if is_reverse {
+            e += head_cigar_l + 10;
+        } else {
+            s += head_cigar_l + 10;
+        }
+    }
+    if top_cigar[len_cigar-1] == Cigar::SoftClip(tail_cigar_l) {
+        if is_reverse {
+           s += tail_cigar_l + 10;
+        } else {
+           e += tail_cigar_l + 10;
+        }
+    } 
+    let e_i = seq_raw.len() - (e as usize);
+    
+    trim_seq.extend(vec![78u8;s as usize]);
+    trim_qual.extend(vec![35u8;s as usize]);
+
+    if (e_i as u32) > s {
+    trim_seq.extend_from_slice(&seq_raw[s as usize..e_i]);
+    trim_qual.extend_from_slice(&qual_raw[s as usize..e_i]);
+    }
+    trim_seq.extend(vec![78u8;e as usize]);
+    trim_qual.extend(vec![35u8;e as usize]);
+
+    (trim_seq, trim_qual)
+
+}
+
+fn dup2consensus_work(group_k:&str, pair_dup:& Vec<(Vec<u8>, Vec<u8>, Vec<u8>, CigarStringView, bool)>, pair_flag: &str, o_buff: & mut File, min_t_s: &u32, min_t_p: &f32, need_trim:bool)  {
     let consensus_base:Vec<u8> = Vec::new();
     let index_identity = -1;
     let mut base_position:HashMap<usize, HashMap<&u8, u32>> = HashMap::new();
@@ -102,6 +141,11 @@ fn dup2consensus_work(group_k:&str, pair_dup:& Vec<(Vec<u8>, Vec<u8>, Vec<u8>)>,
     let mut qual_consnesus:Vec<u8>;
     let mut baseEach_num_record = String::new();
     let mut baseEach_percent_record = String::new();
+    let mut cigar_count:HashMap<String, u32> = HashMap::new();
+    let mut cigar_view_h:HashMap<String, &CigarStringView> = HashMap::new();
+    let mut top_cigar:&CigarStringView;
+    let is_reverse = pair_dup[0].4;
+
 
     
     if pair_dup.len() == 1 {
@@ -111,6 +155,7 @@ fn dup2consensus_work(group_k:&str, pair_dup:& Vec<(Vec<u8>, Vec<u8>, Vec<u8>)>,
         qual_consnesus = real_qual;
         baseEach_num_record =  format!("1,{}.", vec![".,";seq_consensus.len()-2].join(""));
         baseEach_percent_record = format!("{}.", vec![".,";seq_consensus.len()-1].join(""));
+        top_cigar = &pair_dup[0].3;
     } else {
         for tup in pair_dup {
             for (pos, base)  in tup.0.iter().enumerate() {
@@ -127,8 +172,19 @@ fn dup2consensus_work(group_k:&str, pair_dup:& Vec<(Vec<u8>, Vec<u8>, Vec<u8>)>,
                 } else {
                 *base_position.get_mut(&pos).unwrap().entry(base).or_insert(0) += 1;
                 }
+                let cigar_string = format!("{}", tup.3);
+                let cigar_string_copy = format!("{}", tup.3);
+                *cigar_count.entry(cigar_string).or_insert(0) += 1;
+                cigar_view_h.entry(cigar_string_copy).or_insert(&tup.3);
             }
+            
         }
+        let top_cigar_string = cigar_count.iter()
+                               .max_by(|a, b| a.1.cmp(b.1)) 
+                               .unwrap().0;
+        top_cigar = cigar_view_h.get(top_cigar_string).unwrap(); 
+
+
         seq_consensus = vec![78;base_position.len()];
         qual_consnesus =  vec![78;base_position.len()];
         let mut top_base_percent = 0.0f32;
@@ -170,6 +226,15 @@ fn dup2consensus_work(group_k:&str, pair_dup:& Vec<(Vec<u8>, Vec<u8>, Vec<u8>)>,
             
         }
     }
+
+    if need_trim {
+        let (seq_consensus_trim, qual_consnesus_trim) = trim_softclip(&seq_consensus,
+                                                        &qual_consnesus,
+                                                        top_cigar,
+                                                        is_reverse);
+        seq_consensus = seq_consensus_trim;
+        qual_consnesus = qual_consnesus_trim;
+    }
     
     let temp_v:Vec<&str> = group_k.split('_').collect();
     let chrom = temp_v[1];
@@ -188,7 +253,7 @@ fn dup2consensus_work(group_k:&str, pair_dup:& Vec<(Vec<u8>, Vec<u8>, Vec<u8>)>,
         o_buff.write(&real_qual_temp);
     }
     o_buff.write(b"\n");
-
+    
     o_buff.write(&seq_consensus).unwrap();
     o_buff.write(b"\n");
     o_buff.write(b"+\n").unwrap();
@@ -196,7 +261,7 @@ fn dup2consensus_work(group_k:&str, pair_dup:& Vec<(Vec<u8>, Vec<u8>, Vec<u8>)>,
     o_buff.write(b"\n");
 }
 
-fn  block_consensus(pd:& mut HashMap<String, HashMap<String, Vec<(Vec<u8>, Vec<u8>, Vec<u8>)>>>, chrom: i32, use_check:bool, min_t_s: &u32, min_t_p: &f32, o_r1: & mut File, o_r2: & mut File) {
+fn  block_consensus(pd:& mut HashMap<String, HashMap<String, Vec<(Vec<u8>, Vec<u8>, Vec<u8>, CigarStringView, bool)>>>, chrom: i32, use_check:bool, min_t_s: &u32, min_t_p: &f32, o_r1: & mut File, o_r2: & mut File, need_trim:bool) {
     let mut can_consensus_v:Vec<String> = Vec::new();
     
     for (key_dupGroup, pair_dup) in pd.iter() {
@@ -208,8 +273,8 @@ fn  block_consensus(pd:& mut HashMap<String, HashMap<String, Vec<(Vec<u8>, Vec<u
     }
 
     for k in can_consensus_v {
-        dup2consensus_work(&k, pd.get(&k).unwrap().get("R1").unwrap(),"1", o_r1, min_t_s, min_t_p);
-        dup2consensus_work(&k, pd.get(&k).unwrap().get("R2").unwrap(),"2", o_r2, min_t_s, min_t_p);
+        dup2consensus_work(&k, pd.get(&k).unwrap().get("R1").unwrap(),"1", o_r1, min_t_s, min_t_p,need_trim);
+        dup2consensus_work(&k, pd.get(&k).unwrap().get("R2").unwrap(),"2", o_r2, min_t_s, min_t_p,need_trim);
         pd.remove(&k);
     }     
 }
@@ -240,6 +305,8 @@ fn main() {
                                .value_name("MIN_PERCENT")
                                .default_value("0.8")
                                .help("the number of min top base percent"))
+                          .arg(Arg::with_name("need_trim").short("-t")
+                               .help("need to trim default is false"))
                           .get_matches();
 
     let bam_path = matches.value_of("bam").unwrap();
@@ -249,6 +316,12 @@ fn main() {
                      .expect("the -n must be a int number");
     let min_t_p:f32 = matches.value_of("min_percent").unwrap().trim().parse()
                      .expect("the -p must be a float number");
+    let mut need_trim:bool;
+    if matches.is_present("need_trim") {
+        need_trim = true;
+    } else {
+        need_trim = false;
+    }
 
     let f_r1_path = Path::new(outdir).join(format!("{}_consensus_R1_fastq", prefix));
     let f_r2_path = Path::new(outdir).join(format!("{}_consensus_R2_fastq", prefix));
@@ -262,11 +335,11 @@ fn main() {
     let mut iter_pos = 0;
     let mut chrom = 0;
     
-    let mut position_dupGroup: HashMap<String, HashMap<String, Vec<(Vec<u8>, Vec<u8>, Vec<u8>)>>> = HashMap::new();
+    let mut position_dupGroup: HashMap<String, HashMap<String, Vec<(Vec<u8>, Vec<u8>, Vec<u8>, CigarStringView, bool)>>> = HashMap::new();
     for r in bam.records() {
         let record = r.unwrap();
         if record.pos() != iter_pos {
-            block_consensus(&mut position_dupGroup, chrom, true, & min_t_s, & min_t_p,  & mut f_r1, & mut f_r2);
+            block_consensus(&mut position_dupGroup, chrom, true, & min_t_s, & min_t_p,  & mut f_r1, & mut f_r2, need_trim);
         }
         iter_pos = record.pos();
         if check_flag(&record.flags()) {
@@ -278,26 +351,31 @@ fn main() {
             let mut new_seq_b:Vec<u8> = Vec::new();
             let mut new_qual_b:Vec<u8> = Vec::new();
             let mut qname:Vec<u8> = Vec::new();
+            let mut is_reverse:bool = false;
+            let mut cigar_view = record.cigar();
 
             if record.is_reverse() {
                 new_seq_b = reverse_complement(&raw_seq_b);
                 new_qual_b = reverse_only(raw_qual_b);
+                is_reverse = false;
             } else {
                 new_seq_b = raw_seq_b;
                 new_qual_b.extend_from_slice(raw_qual_b);
             }
+
+
             qname.extend_from_slice(record.qname());
             let key_dupGroup = format!("{}_{}_{}_{}{}", index, chrom, aln_pos, strand, insert_size);
             if position_dupGroup.contains_key(&key_dupGroup) {
-                    position_dupGroup.get_mut(&key_dupGroup).unwrap().entry(pair).or_insert(Vec::new()).push((new_seq_b, new_qual_b, qname));
+                    position_dupGroup.get_mut(&key_dupGroup).unwrap().entry(pair).or_insert(Vec::new()).push((new_seq_b, new_qual_b, qname, cigar_view, is_reverse));
 
             } else {
                 let mut pair_dup = HashMap::new();
-                pair_dup.insert(pair,vec![(new_seq_b, new_qual_b, qname)]);
+                pair_dup.insert(pair,vec![(new_seq_b, new_qual_b, qname, cigar_view, is_reverse)]);
                 position_dupGroup.insert(key_dupGroup, pair_dup);
             }
         }
         
     }
-    block_consensus(& mut position_dupGroup, chrom, false, &min_t_s, &min_t_p, & mut f_r1, & mut f_r2);
+    block_consensus(& mut position_dupGroup, chrom, false, &min_t_s, &min_t_p, & mut f_r1, & mut f_r2, need_trim);
 }
