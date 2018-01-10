@@ -1,3 +1,8 @@
+/*
+ * author: liteng
+ * address: <707704459@qq.com>
+ */
+
 extern crate rust_htslib;
 extern crate clap;
 
