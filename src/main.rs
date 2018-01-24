@@ -209,11 +209,25 @@ fn dup2consensus_work(group_k:&str, pair_dup:& Vec<(Vec<u8>, Vec<u8>, Vec<u8>, C
             let sum_qual = *qual_position.get(&i).unwrap();
             qual_consnesus[i] = (sum_qual / p_n + 33) as u8 ;
 
-            if (num_position[&(i as usize)] == num_position[&(0 as usize)] && baseEach_num_record.len() > 0) {
-                baseEach_num_record.push_str(",.");
+            
+            let mut str_num:String;
+            if baseEach_num_record.len() == 0 {
+                str_num = format!("{}", num_position[&(i as usize)]);
+
             } else {
-                baseEach_num_record.push_str(&format!("{}", num_position[&(0 as usize)]));
-            }
+                if (num_position[&(i as usize)] == num_position[&(0 as usize)]) {
+                    str_num = String::from(",.");
+                } else {
+                    str_num = format!(",{}", num_position[&(i as usize)]);
+                }
+            } 
+            //if (num_position[&(i as usize)] == num_position[&(0 as usize)] && baseEach_num_record.len() > 0) {
+            //baseEach_num_record.push_str(",.");
+            //} else {
+                //println!("{}, {}", num_position[&(i as usize)], num_position[&(0 as usize)]);
+                //if baseEach_num_record.len()
+            baseEach_num_record.push_str(&str_num);
+            //}
 
             let mut str_percent:String;
             if top_base_percent < 1.0f32 {
